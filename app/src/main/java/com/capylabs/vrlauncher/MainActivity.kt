@@ -8,7 +8,9 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.Surface
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -16,7 +18,9 @@ import kotlin.math.PI
 
 class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var scene: VrSceneView
+    private lateinit var handOverlay: HandOverlayView
     private lateinit var sensors: SensorManager
+    private var handTracker: HandTracker? = null
     private var smoothYaw = 0f
     private var smoothPitch = 0f
     private var calibrated = false
@@ -30,16 +34,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
             android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
             android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+
         scene = VrSceneView(this)
-        setContentView(scene)
+        handOverlay = HandOverlayView(this).apply { isClickable = false }
+        val root = FrameLayout(this)
+        root.addView(scene, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        root.addView(handOverlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        setContentView(root)
+
         sensors = getSystemService(SENSOR_SERVICE) as SensorManager
         val rotationSensor = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
             ?: sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        rotationSensor?.let {
-            sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        rotationSensor?.let { sensors.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startHandTracking()
+        } else {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 7)
+    }
+
+    private fun startHandTracking() {
+        if (handTracker != null) return
+        handTracker = HandTracker(
+            context = this,
+            onHands = { hands ->
+                handOverlay.setHands(hands)
+                // Pinch state is now available to the VR interaction layer.
+                // The 3D pointer is kept independent from head pose.
+                scene.setHands(hands)
+            },
+            onError = { /* Camera/model errors are intentionally non-blocking for VR UI. */ }
+        ).also { it.start(this) }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            startHandTracking()
         }
     }
 
@@ -89,7 +121,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     override fun onDestroy() {
+        handTracker?.stop()
         sensors.unregisterListener(this)
         super.onDestroy()
     }
+
+    companion object { private const val CAMERA_REQUEST = 7 }
 }
