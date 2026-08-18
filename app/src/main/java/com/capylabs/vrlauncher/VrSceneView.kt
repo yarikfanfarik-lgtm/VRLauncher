@@ -1,363 +1,408 @@
 package com.capylabs.vrlauncher
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.*
 import android.graphics.drawable.Drawable
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.min
 
+/** Premium Cardboard desktop. No 8x8 reveal animation. */
 class VrSceneView(context: Context) : View(context) {
-    private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val panel = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val small = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val apps = ArrayList<AppItem>()
-    private var yaw = 0f
-    private var pitch = 0f
-    private var selectedApp: AppItem? = null
-    private var showKeyboard = false
-    private var gameMode = false
-    private var dragX = 0f
-    private var dragY = 0f
-    private var windowX = 0f
-    private var windowY = 0f
-    private var dragging = false
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val line = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val title = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val label = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val iconFallback = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    data class AppItem(val label: String, val packageName: String, val icon: Drawable?)
+    private data class App(val name: String, val packageName: String, val activityName: String, val icon: Drawable?)
+    private val apps = mutableListOf<App>()
+    private var opened: App? = null
+    private var keyboard = false
+    private var gameMode = false
+    private var keyboardX = 0f
+    private var keyboardY = 0f
+    private var draggingKeyboard = false
+    private var dragOffsetX = 0f
+    private var dragOffsetY = 0f
+    private var headYaw = 0f
+    private var headPitch = 0f
 
     init {
-        isFocusable = true
-        text.typeface = Typeface.create("sans", Typeface.NORMAL)
-        small.typeface = Typeface.create("sans", Typeface.NORMAL)
+        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+        title.typeface = Typeface.create("sans", Typeface.BOLD)
+        label.typeface = Typeface.create("sans", Typeface.NORMAL)
         loadApps()
     }
 
     private fun loadApps() {
         val pm = context.packageManager
-        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
-            addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-        }
-        pm.queryIntentActivities(intent, 0)
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
             .distinctBy { it.activityInfo.packageName }
             .sortedBy { it.loadLabel(pm).toString().lowercase() }
-            .take(24)
+            .take(30)
             .forEach { info ->
-                apps += AppItem(info.loadLabel(pm).toString(), info.activityInfo.packageName, info.loadIcon(pm))
+                apps += App(info.loadLabel(pm).toString(), info.activityInfo.packageName, info.activityInfo.name, info.loadIcon(pm))
             }
     }
 
     fun setHead(yaw: Float, pitch: Float) {
-        this.yaw = yaw
-        this.pitch = pitch
+        headYaw = yaw
+        headPitch = pitch
         postInvalidateOnAnimation()
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val half = width / 2f
-        drawEye(canvas, 0f, half, -0.018f)
-        drawEye(canvas, half, half, 0.018f)
+        val eye = width / 2f
+        drawEye(canvas, 0f, eye, -0.014f)
+        drawEye(canvas, eye, eye, 0.014f)
     }
 
-    private fun drawEye(canvas: Canvas, left: Float, eyeWidth: Float, stereo: Float) {
-        canvas.save()
-        canvas.clipRect(left, 0f, left + eyeWidth, height.toFloat())
-        canvas.translate(left, 0f)
-
-        val w = eyeWidth
+    private fun drawEye(c: Canvas, left: Float, eyeW: Float, stereo: Float) {
+        c.save()
+        c.clipRect(left, 0f, left + eyeW, height.toFloat())
+        c.translate(left, 0f)
+        val px = stereo * eyeW + headYaw * 34f
+        val py = headPitch * 18f
+        val w = eyeW
         val h = height.toFloat()
-        val parallax = stereo * w + yaw * 42f
-        val vertical = pitch * 24f
-
-        drawBackground(canvas, w, h, parallax, vertical)
-        drawSidebar(canvas, w, h, parallax, vertical)
-        drawQuickActions(canvas, w, parallax, vertical)
-        drawLibrary(canvas, w, h, parallax, vertical)
-        drawActiveWindows(canvas, w, h, parallax, vertical)
-        drawDock(canvas, w, h, parallax)
-        selectedApp?.let { drawFloatingApp(canvas, w, h, parallax, vertical, it) }
-        if (showKeyboard) drawKeyboard(canvas, w, h, parallax, vertical)
-
-        canvas.restore()
+        drawBackground(c, w, h, px, py)
+        drawSidebar(c, h, px, py)
+        drawQuickActions(c, w, px, py)
+        drawLibrary(c, w, h, px, py)
+        drawActiveWindows(c, w, h, px, py)
+        drawDock(c, w, h, px)
+        opened?.let { drawFloatingApp(c, w, h, px, py, it) }
+        if (keyboard) drawKeyboard(c, w, h, px, py)
+        c.restore()
     }
 
     private fun drawBackground(c: Canvas, w: Float, h: Float, px: Float, py: Float) {
-        bg.shader = LinearGradient(0f, 0f, w, h, Color.rgb(5, 9, 20), Color.rgb(16, 8, 35), Shader.TileMode.CLAMP)
-        c.drawRect(0f, 0f, w, h, bg)
-        bg.shader = null
-
-        val horizon = h * 0.68f + py
-        bg.shader = RadialGradient(w * .52f + px, horizon, w * .65f, Color.argb(90, 75, 95, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        c.drawRect(0f, 0f, w, h, bg)
-        bg.shader = null
-
-        stroke.color = Color.argb(32, 150, 180, 255)
-        stroke.strokeWidth = 1f
-        for (i in 0..8) c.drawLine(0f, horizon + i * 26f, w, horizon + i * 26f, stroke)
+        p.shader = LinearGradient(0f, 0f, w, h, Color.rgb(3, 7, 17), Color.rgb(12, 7, 31), Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, w, h, p)
+        p.shader = null
+        val horizon = h * .70f + py
+        p.shader = RadialGradient(w * .58f + px, horizon, w * .70f, Color.argb(110, 56, 93, 170), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, w, h, p)
+        p.shader = null
+        p.color = Color.argb(150, 190, 210, 255)
+        val stars = intArrayOf(48, 90, 136, 202, 271, 335, 402, 461, 523, 590)
+        stars.forEachIndexed { i, sx0 ->
+            val sx = (sx0 % w.toInt()).toFloat()
+            val sy = 18f + (i * 31f) % (h * .48f)
+            c.drawCircle(sx + px * .12f, sy + py * .08f, if (i % 3 == 0) 1.4f else .8f, p)
+        }
+        line.color = Color.argb(28, 150, 180, 255)
+        line.strokeWidth = 1f
+        for (i in 0..7) c.drawLine(0f, horizon + i * 27f, w, horizon + i * 27f, line)
     }
 
-    private fun drawSidebar(c: Canvas, w: Float, h: Float, px: Float, py: Float) {
-        val x = 24f + px * .25f
-        val y = 36f + py
-        val sw = 142f
-        val sh = h - 92f
-        glass(c, x, y, x + sw, y + sh, 24f, .72f)
-        val items = listOf("⌂  Домой", "▦  Приложения", "▣  Рабочий стол", "◈  Игры", "▤  Обои", "⚙  Настройки")
-        text.textSize = 15f
-        items.forEachIndexed { i, label ->
-            val iy = y + 22f + i * 55f
+    private fun drawSidebar(c: Canvas, h: Float, px: Float, py: Float) {
+        val x = 20f + px * .18f
+        val y = 32f + py
+        val sw = 145f
+        val sh = h - 82f
+        glass(c, x, y, x + sw, y + sh, 24f, 220)
+        val icons = arrayOf("⌂", "▦", "▣", "◈", "▤", "⚙")
+        val names = arrayOf("Домой", "Приложения", "Рабочий стол", "Игры", "Обои", "Настройки")
+        for (i in icons.indices) {
+            val iy = y + 18f + i * 55f
             if (i == 0) {
-                panel.color = Color.argb(100, 110, 100, 255)
-                c.drawRoundRect(x + 8f, iy, x + sw - 8f, iy + 43f, 14f, 14f, panel)
+                p.color = Color.argb(115, 95, 88, 235)
+                c.drawRoundRect(x + 8f, iy, x + sw - 8f, iy + 42f, 14f, 14f, p)
             }
-            text.color = if (i == 0) Color.WHITE else Color.argb(225, 230, 235, 245)
-            c.drawText(label, x + 20f, iy + 27f, text)
+            title.color = Color.WHITE
+            title.textSize = 17f
+            c.drawText(icons[i], x + 18f, iy + 27f, title)
+            label.color = Color.argb(232, 242, 244, 250)
+            label.textSize = 14f
+            c.drawText(names[i], x + 48f, iy + 26f, label)
         }
-        small.color = Color.argb(160, 220, 225, 240)
-        small.textSize = 12f
-        c.drawText("VR LAUNCHER", x + 20f, y + sh - 54f, small)
-        c.drawText("18:42   •   89%", x + 20f, y + sh - 28f, small)
+        label.color = Color.argb(170, 220, 225, 240)
+        label.textSize = 11f
+        c.drawText("VR LAUNCHER", x + 18f, y + sh - 54f, label)
+        c.drawText("18:42   •   Wi-Fi   •   89%", x + 18f, y + sh - 30f, label)
     }
 
     private fun drawQuickActions(c: Canvas, w: Float, px: Float, py: Float) {
-        val x = 185f + px * .45f
-        val y = 24f + py
-        val aw = min(w - 210f, 700f)
-        glass(c, x, y, x + aw, y + 74f, 20f, .76f)
-        small.color = Color.argb(175, 230, 235, 250)
-        small.textSize = 11f
-        c.drawText("БЫСТРЫЕ ДЕЙСТВИЯ", x + 18f, y + 18f, small)
-        val actions = arrayOf("↶", "⌂", "◷", "▣", "◉", "●", "☼")
-        val names = arrayOf("Назад", "Домой", "Недавние", "Окна", "Снимок", "Микрофон", "Яркость")
-        val cell = min(74f, (aw - 28f) / actions.size)
-        actions.indices.forEach { i ->
-            val ax = x + 12f + i * cell
-            panel.color = Color.argb(45, 255, 255, 255)
-            c.drawRoundRect(ax, y + 25f, ax + cell - 6f, y + 66f, 12f, 12f, panel)
-            text.color = Color.WHITE
-            text.textSize = 17f
-            c.drawText(actions[i], ax + 13f, y + 45f, text)
-            small.textSize = 7.5f
-            small.color = Color.argb(180, 220, 225, 240)
-            c.drawText(names[i], ax + 5f, y + 59f, small)
+        val x = 180f + px * .38f
+        val y = 20f + py
+        val rw = min(690f, w - 195f)
+        glass(c, x, y, x + rw, y + 78f, 22f, 228)
+        label.color = Color.argb(190, 245, 247, 255)
+        label.textSize = 11f
+        c.drawText("БЫСТРЫЕ ДЕЙСТВИЯ", x + 18f, y + 18f, label)
+        val icons = arrayOf("↶", "⌂", "◷", "▣", "◉", "●", "◌", "☼")
+        val names = arrayOf("Назад", "Домой", "Недавние", "Окна", "Скриншот", "Запись", "Микрофон", "Яркость")
+        val cell = min(78f, (rw - 28f) / icons.size)
+        icons.indices.forEach { i ->
+            val bx = x + 10f + i * cell
+            p.color = Color.argb(54, 255, 255, 255)
+            c.drawRoundRect(bx, y + 25f, bx + cell - 5f, y + 68f, 12f, 12f, p)
+            title.color = if (i == 6) Color.rgb(100, 240, 190) else Color.WHITE
+            title.textSize = 18f
+            c.drawText(icons[i], bx + (cell - 5f) / 2f - 8f, y + 46f, title)
+            label.color = Color.argb(180, 225, 230, 242)
+            label.textSize = 7.5f
+            c.drawText(names[i], bx + 4f, y + 61f, label)
         }
     }
 
     private fun drawLibrary(c: Canvas, w: Float, h: Float, px: Float, py: Float) {
-        val x = 185f + px * .7f
-        val y = 120f + py
-        val lw = min(570f, w - 385f)
-        val lh = min(420f, h - 175f)
-        glass(c, x, y, x + lw, y + lh, 26f, .82f)
-        text.color = Color.WHITE
-        text.textSize = 18f
-        c.drawText("БИБЛИОТЕКА ПРИЛОЖЕНИЙ", x + 22f, y + 32f, text)
-        small.color = Color.argb(135, 220, 225, 240)
-        small.textSize = 11f
-        c.drawText("Все приложения", x + 22f, y + 51f, small)
-
+        val x = 180f + px * .62f
+        val y = 116f + py
+        val rw = min(570f, w - 380f)
+        val rh = min(410f, h - 166f)
+        glass(c, x, y, x + rw, y + rh, 26f, 226)
+        title.color = Color.WHITE
+        title.textSize = 17f
+        c.drawText("БИБЛИОТЕКА ПРИЛОЖЕНИЙ", x + 20f, y + 31f, title)
+        p.color = Color.argb(50, 255, 255, 255)
+        c.drawRoundRect(x + 18f, y + 44f, x + rw - 18f, y + 72f, 12f, 12f, p)
+        label.color = Color.argb(145, 225, 230, 242)
+        label.textSize = 10f
+        c.drawText("⌕  Поиск приложений...", x + 30f, y + 62f, label)
         val cols = 6
-        val cellW = (lw - 44f) / cols
-        val startY = y + 78f
+        val cell = (rw - 36f) / cols
         apps.take(18).forEachIndexed { index, app ->
             val col = index % cols
             val row = index / cols
-            val ix = x + 14f + col * cellW
-            val iy = startY + row * 92f
-            drawAppIcon(c, app, ix + cellW / 2f, iy + 24f, 28f)
-            small.color = Color.argb(220, 240, 242, 248)
-            small.textSize = 9.5f
-            val label = if (app.label.length > 12) app.label.take(11) + "…" else app.label
-            c.drawText(label, ix + cellW / 2f - small.measureText(label) / 2f, iy + 66f, small)
+            val cx = x + 18f + cell * col + cell / 2f
+            val cy = y + 105f + row * 88f
+            drawAppIcon(c, app, cx, cy, 25f)
+            label.color = Color.argb(235, 245, 246, 250)
+            label.textSize = 9f
+            val n = if (app.name.length > 11) app.name.take(10) + "…" else app.name
+            c.drawText(n, cx - label.measureText(n) / 2f, cy + 42f, label)
         }
     }
 
     private fun drawActiveWindows(c: Canvas, w: Float, h: Float, px: Float, py: Float) {
-        val x = w - 188f + px
-        val y = 124f + py
-        if (x < 0f) return
-        val rw = 166f
-        val rh = 105f
-        glass(c, x, y, x + rw, y + 2 * rh + 16f, 22f, .78f)
-        text.color = Color.WHITE
-        text.textSize = 14f
-        c.drawText("АКТИВНЫЕ ОКНА", x + 15f, y + 25f, text)
-        drawMiniWindow(c, x + 10f, y + 37f, rw - 20f, rh, "YouTube")
-        drawMiniWindow(c, x + 10f, y + 45f + rh, rw - 20f, rh, "Chrome")
+        val rw = 172f
+        val x = w - rw - 16f + px
+        val y = 116f + py
+        if (x < 340f) return
+        glass(c, x, y, x + rw, y + 300f, 22f, 224)
+        title.color = Color.WHITE
+        title.textSize = 14f
+        c.drawText("АКТИВНЫЕ ОКНА", x + 14f, y + 25f, title)
+        drawMiniWindow(c, x + 9f, y + 37f, rw - 18f, 110f, "YouTube")
+        drawMiniWindow(c, x + 9f, y + 157f, rw - 18f, 110f, "Chrome")
     }
 
-    private fun drawMiniWindow(c: Canvas, x: Float, y: Float, w: Float, h: Float, title: String) {
-        panel.color = Color.argb(100, 8, 12, 22)
-        c.drawRoundRect(x, y, x + w, y + h, 14f, 14f, panel)
-        stroke.color = Color.argb(75, 180, 190, 255)
-        stroke.style = Paint.Style.STROKE
-        c.drawRoundRect(x, y, x + w, y + h, 14f, 14f, stroke)
-        stroke.style = Paint.Style.FILL
-        small.color = Color.WHITE
-        small.textSize = 9f
-        c.drawText(title, x + 10f, y + 17f, small)
-        panel.color = Color.argb(35, 255, 255, 255)
-        c.drawRect(x + 8f, y + 27f, x + w - 8f, y + h - 9f, panel)
-        small.color = Color.argb(170, 220, 225, 240)
-        c.drawText("закреплено", x + 10f, y + h - 14f, small)
+    private fun drawMiniWindow(c: Canvas, x: Float, y: Float, w: Float, h: Float, name: String) {
+        p.color = Color.argb(100, 7, 11, 22)
+        c.drawRoundRect(x, y, x + w, y + h, 13f, 13f, p)
+        line.color = Color.argb(90, 180, 195, 255)
+        line.style = Paint.Style.STROKE
+        c.drawRoundRect(x, y, x + w, y + h, 13f, 13f, line)
+        line.style = Paint.Style.FILL
+        label.color = Color.WHITE
+        label.textSize = 9f
+        c.drawText(name, x + 9f, y + 16f, label)
+        c.drawText("⌖", x + w - 33f, y + 16f, label)
+        c.drawText("×", x + w - 17f, y + 16f, label)
+        p.color = Color.argb(38, 255, 255, 255)
+        c.drawRect(x + 8f, y + 25f, x + w - 8f, y + h - 9f, p)
+        label.color = Color.argb(155, 225, 230, 242)
+        c.drawText("закреплено", x + 9f, y + h - 14f, label)
     }
 
-    private fun drawFloatingApp(c: Canvas, w: Float, h: Float, px: Float, py: Float, app: AppItem) {
-        if (windowX == 0f) windowX = w * .28f
-        if (windowY == 0f) windowY = h * .28f
-        val x = windowX + px
-        val y = windowY + py
-        val ww = min(w * .58f, 500f)
-        val hh = min(h * .52f, 310f)
-        glass(c, x, y, x + ww, y + hh, 22f, .90f)
-        drawAppIcon(c, app, x + 26f, y + 24f, 16f)
-        text.color = Color.WHITE
-        text.textSize = 14f
-        c.drawText(app.label, x + 50f, y + 30f, text)
-        small.color = Color.argb(180, 230, 235, 245)
-        small.textSize = 18f
-        c.drawText("−   □   ×", x + ww - 78f, y + 28f, small)
-        panel.color = Color.argb(30, 255, 255, 255)
-        c.drawRoundRect(x + 12f, y + 48f, x + ww - 12f, y + hh - 12f, 14f, 14f, panel)
-        small.color = Color.argb(150, 225, 230, 240)
-        small.textSize = 12f
-        c.drawText("Приложение находится поверх VR Desktop", x + 28f, y + 80f, small)
-        c.drawText("Главное меню остаётся видимым", x + 28f, y + 100f, small)
-        if (gameMode) drawGameControls(c, x, y + hh - 72f, ww)
+    private fun drawFloatingApp(c: Canvas, w: Float, h: Float, px: Float, py: Float, app: App) {
+        val rw = min(520f, w * .62f)
+        val rh = min(320f, h * .56f)
+        val x = w * .25f + px
+        val y = h * .25f + py
+        glass(c, x, y, x + rw, y + rh, 23f, 242)
+        drawAppIcon(c, app, x + 25f, y + 23f, 15f)
+        title.color = Color.WHITE
+        title.textSize = 14f
+        c.drawText(app.name, x + 48f, y + 28f, title)
+        label.color = Color.WHITE
+        label.textSize = 18f
+        c.drawText("−", x + rw - 66f, y + 27f, label)
+        c.drawText("□", x + rw - 43f, y + 27f, label)
+        c.drawText("×", x + rw - 20f, y + 27f, label)
+        p.color = Color.argb(38, 255, 255, 255)
+        c.drawRoundRect(x + 12f, y + 45f, x + rw - 12f, y + rh - 12f, 15f, 15f, p)
+        label.color = Color.argb(175, 235, 238, 247)
+        label.textSize = 12f
+        c.drawText("ПРИЛОЖЕНИЕ ОТКРЫТО В VR", x + 28f, y + 77f, label)
+        c.drawText("Главное меню остаётся видимым поверх рабочего пространства.", x + 28f, y + 100f, label)
+        if (gameMode) drawGameOverlay(c, x, y, rw, rh)
     }
 
-    private fun drawGameControls(c: Canvas, x: Float, y: Float, w: Float) {
-        panel.color = Color.argb(100, 10, 14, 24)
-        c.drawRoundRect(x + 12f, y, x + w - 12f, y + 56f, 16f, 16f, panel)
-        small.color = Color.WHITE
-        small.textSize = 10f
-        c.drawText("AIR MOUSE", x + 25f, y + 23f, small)
-        c.drawText("PINCH = CLICK", x + 25f, y + 40f, small)
-        c.drawText("VR GAME", x + w - 80f, y + 31f, small)
+    private fun drawGameOverlay(c: Canvas, x: Float, y: Float, rw: Float, rh: Float) {
+        p.color = Color.argb(150, 4, 7, 14)
+        c.drawRoundRect(x + 14f, y + rh - 67f, x + rw - 14f, y + rh - 14f, 15f, 15f, p)
+        label.color = Color.WHITE
+        label.textSize = 9f
+        c.drawText("AIR MOUSE", x + 28f, y + rh - 43f, label)
+        c.drawText("движение руки = обзор", x + 28f, y + rh - 27f, label)
+        c.drawText("PINCH = CLICK", x + rw - 125f, y + rh - 35f, label)
+        c.drawText("VR GAME", x + rw - 72f, y + rh - 52f, label)
     }
 
     private fun drawKeyboard(c: Canvas, w: Float, h: Float, px: Float, py: Float) {
-        val kw = min(390f, w * .56f)
-        val kh = 176f
-        val x = w * .50f - kw / 2f + px
-        val y = h * .61f + py
-        glass(c, x, y, x + kw, y + kh, 22f, .92f)
-        text.color = Color.WHITE
-        text.textSize = 12f
-        c.drawText("VR КЛАВИАТУРА", x + 18f, y + 22f, text)
-        small.color = Color.argb(160, 220, 225, 240)
-        small.textSize = 9f
-        c.drawText("3D-панель • закреплена в пространстве • не приклеена к голове", x + 18f, y + 38f, small)
-        val rows = arrayOf("Й Ц У К Е Н Г Ш Щ З Х", "Ф Ы В А П Р О Л Д Ж Э", "Я Ч С М И Т Ь Б Ю")
-        rows.forEachIndexed { r, line ->
-            val keys = line.split(" ")
-            val bw = (kw - 32f) / keys.size - 3f
-            keys.forEachIndexed { i, key ->
-                val bx = x + 16f + i * (bw + 3f)
-                val by = y + 51f + r * 31f
-                panel.color = Color.argb(72, 255, 255, 255)
-                c.drawRoundRect(bx, by, bx + bw, by + 26f, 7f, 7f, panel)
-                small.color = Color.WHITE
-                small.textSize = 10f
-                c.drawText(key, bx + bw / 2f - small.measureText(key) / 2f, by + 17f, small)
+        val kw = min(400f, w * .58f)
+        val kh = 188f
+        val baseX = if (keyboardX == 0f) w * .50f - kw / 2f else keyboardX
+        val baseY = if (keyboardY == 0f) h * .61f else keyboardY
+        val x = baseX + px
+        val y = baseY + py
+        glass(c, x + 8f, y + 10f, x + kw + 8f, y + kh + 10f, 22f, 85)
+        glass(c, x, y, x + kw, y + kh, 22f, 242)
+        title.color = Color.WHITE
+        title.textSize = 12f
+        c.drawText("VR КЛАВИАТУРА", x + 16f, y + 21f, title)
+        label.color = Color.argb(160, 225, 230, 242)
+        label.textSize = 8.5f
+        c.drawText("закреплена • можно перемещать", x + kw - 148f, y + 21f, label)
+        val rows = arrayOf("Й Ц У К Е Н Г Ш Щ З Х Ъ", "Ф Ы В А П Р О Л Д Ж Э", "Я Ч С М И Т Ь Б Ю")
+        rows.forEachIndexed { row, keys ->
+            val a = keys.split(" ")
+            val gap = 3f
+            val bw = (kw - 30f - gap * (a.size - 1)) / a.size
+            a.forEachIndexed { i, key ->
+                val bx = x + 15f + i * (bw + gap)
+                val by = y + 34f + row * 32f
+                p.color = Color.argb(75, 255, 255, 255)
+                c.drawRoundRect(bx, by, bx + bw, by + 27f, 7f, 7f, p)
+                label.color = Color.WHITE
+                label.textSize = 9f
+                c.drawText(key, bx + bw / 2f - label.measureText(key) / 2f, by + 18f, label)
             }
         }
-        panel.color = Color.argb(95, 90, 110, 210)
-        c.drawRoundRect(x + 16f, y + 146f, x + 64f, y + 168f, 7f, 7f, panel)
-        c.drawRoundRect(x + 69f, y + 146f, x + kw - 70f, y + 168f, 7f, 7f, panel)
-        c.drawRoundRect(x + kw - 64f, y + 146f, x + kw - 16f, y + 168f, 7f, 7f, panel)
-        small.color = Color.WHITE
-        small.textSize = 9f
-        c.drawText("🌐", x + 31f, y + 162f, small)
-        c.drawText("ПРОБЕЛ", x + kw / 2f - 22f, y + 162f, small)
-        c.drawText("⌫", x + kw - 48f, y + 162f, small)
+        val bottom = y + 132f
+        key(c, x + 15f, bottom, 52f, "🌐")
+        key(c, x + 71f, bottom, kw - 142f, "ПРОБЕЛ")
+        key(c, x + kw - 67f, bottom, 52f, "⌫")
+        label.color = Color.argb(155, 225, 230, 242)
+        label.textSize = 8f
+        c.drawText("Русский", x + 28f, y + 178f, label)
+    }
+
+    private fun key(c: Canvas, x: Float, y: Float, w: Float, value: String) {
+        p.color = Color.argb(95, 80, 95, 205)
+        c.drawRoundRect(x, y, x + w, y + 28f, 8f, 8f, p)
+        label.color = Color.WHITE
+        label.textSize = 9f
+        c.drawText(value, x + w / 2f - label.measureText(value) / 2f, y + 18f, label)
     }
 
     private fun drawDock(c: Canvas, w: Float, h: Float, px: Float) {
-        val dw = min(360f, w - 260f)
+        val dw = min(370f, w - 240f)
         val x = w / 2f - dw / 2f + px
         val y = h - 58f
-        glass(c, x, y, x + dw, y + 42f, 20f, .82f)
-        val icons = arrayOf("▦", "◉", "◎", "◈", "⚙", "18:42")
-        icons.forEachIndexed { i, s ->
-            small.color = Color.WHITE
-            small.textSize = if (i == 5) 11f else 17f
-            c.drawText(s, x + 22f + i * (dw - 44f) / 5f, y + 27f, small)
+        glass(c, x, y, x + dw, y + 40f, 20f, 225)
+        val items = arrayOf("▦", "◎", "◉", "◈", "⚙", "18:42", "89%")
+        items.forEachIndexed { i, s ->
+            label.color = Color.WHITE
+            label.textSize = if (i > 4) 10f else 17f
+            c.drawText(s, x + 18f + i * (dw - 36f) / (items.size - 1), y + 26f, label)
         }
     }
 
-    private fun drawAppIcon(c: Canvas, app: AppItem, cx: Float, cy: Float, radius: Float) {
+    private fun drawAppIcon(c: Canvas, app: App, cx: Float, cy: Float, radius: Float) {
         app.icon?.let {
             it.setBounds((cx - radius).toInt(), (cy - radius).toInt(), (cx + radius).toInt(), (cy + radius).toInt())
             it.draw(c)
         } ?: run {
-            iconPaint.color = Color.argb(180, 90, 100, 150)
-            c.drawRoundRect(cx - radius, cy - radius, cx + radius, cy + radius, radius * .3f, radius * .3f, iconPaint)
+            iconFallback.color = Color.rgb(70, 80, 125)
+            c.drawRoundRect(cx - radius, cy - radius, cx + radius, cy + radius, radius * .28f, radius * .28f, iconFallback)
         }
     }
 
-    private fun glass(c: Canvas, l: Float, t: Float, r: Float, b: Float, radius: Float, alpha: Float) {
-        panel.color = Color.argb((alpha * 235).toInt(), 18, 23, 38)
-        panel.setShadowLayer(18f, 0f, 7f, Color.argb(100, 0, 0, 0))
-        c.drawRoundRect(l, t, r, b, radius, radius, panel)
-        panel.clearShadowLayer()
-        stroke.color = Color.argb(80, 205, 220, 255)
-        stroke.style = Paint.Style.STROKE
-        stroke.strokeWidth = 1.2f
-        c.drawRoundRect(l, t, r, b, radius, radius, stroke)
-        stroke.style = Paint.Style.FILL
+    private fun glass(c: Canvas, l: Float, t: Float, r: Float, b: Float, radius: Float, alpha: Int) {
+        p.color = Color.argb(alpha, 15, 20, 34)
+        p.setShadowLayer(20f, 0f, 8f, Color.argb(95, 0, 0, 0))
+        c.drawRoundRect(l, t, r, b, radius, radius, p)
+        p.clearShadowLayer()
+        line.color = Color.argb(95, 200, 215, 255)
+        line.style = Paint.Style.STROKE
+        line.strokeWidth = 1.2f
+        c.drawRoundRect(l, t, r, b, radius, radius, line)
+        line.style = Paint.Style.FILL
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.actionMasked) {
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        val eyeW = width / 2f
+        val x = if (e.x >= eyeW) e.x - eyeW else e.x
+        val y = e.y
+        when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                dragX = event.x
-                dragY = event.y
-                dragging = selectedApp != null && event.x > width * .35f
+                if (keyboard && hitKeyboard(x, y)) {
+                    draggingKeyboard = true
+                    val bx = if (keyboardX == 0f) eyeW / 2f - min(400f, eyeW * .58f) / 2f else keyboardX
+                    val by = if (keyboardY == 0f) height * .61f else keyboardY
+                    dragOffsetX = x - bx
+                    dragOffsetY = y - by
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (dragging && selectedApp != null) {
-                    windowX += event.x - dragX
-                    windowY += event.y - dragY
-                    dragX = event.x
-                    dragY = event.y
+                if (draggingKeyboard) {
+                    keyboardX = x - dragOffsetX
+                    keyboardY = y - dragOffsetY
                     invalidate()
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (dragging) {
-                    dragging = false
+                if (draggingKeyboard) {
+                    draggingKeyboard = false
                     return true
                 }
-                val half = width / 2f
-                val x = if (event.x >= half) event.x - half else event.x
-                val y = event.y
-                val libLeft = 185f
-                val libTop = 120f
-                val libWidth = min(570f, half - 385f)
-                if (x in libLeft..(libLeft + libWidth) && y > libTop + 65f) {
-                    val cols = 6
-                    val cellW = (libWidth - 44f) / cols
-                    val col = ((x - libLeft - 14f) / cellW).toInt()
-                    val row = ((y - (libTop + 78f)) / 92f).toInt()
-                    val idx = row * cols + col
-                    if (idx in apps.indices) openVrWindow(apps[idx])
-                }
+                handleTap(x, y)
                 return true
             }
         }
         return true
     }
 
-    private fun openVrWindow(app: AppItem) {
-        selectedApp = app
-        if (windowX == 0f) windowX = width / 2f - 190f
-        if (windowY == 0f) windowY = height / 2f - 130f
-        invalidate()
+    private fun hitKeyboard(x: Float, y: Float): Boolean {
+        val kw = min(400f, width / 2f * .58f)
+        val bx = if (keyboardX == 0f) width / 4f - kw / 2f else keyboardX
+        val by = if (keyboardY == 0f) height * .61f else keyboardY
+        return x in bx..(bx + kw) && y in by..(by + 188f)
+    }
+
+    private fun handleTap(x: Float, y: Float) {
+        val eyeW = width / 2f
+        val lx = 180f
+        val ly = 116f
+        val rw = min(570f, eyeW - 380f)
+        if (rw > 200f && x in lx..(lx + rw) && y in (ly + 80f)..(ly + 395f)) {
+            val cell = (rw - 36f) / 6f
+            val col = ((x - lx - 18f) / cell).toInt().coerceIn(0, 5)
+            val row = ((y - ly - 80f) / 88f).toInt().coerceIn(0, 2)
+            val index = row * 6 + col
+            if (index in apps.indices) {
+                opened = apps[index]
+                gameMode = false
+                keyboard = false
+                invalidate()
+                return
+            }
+        }
+        if (opened != null) {
+            val rw2 = min(520f, eyeW * .62f)
+            val rh2 = min(320f, height * .56f)
+            val ox = eyeW * .25f
+            val oy = height * .25f
+            if (x in (ox + rw2 - 55f)..(ox + rw2) && y in oy..(oy + 48f)) {
+                keyboard = !keyboard
+                invalidate()
+                return
+            }
+            if (x in (ox + rw2 - 82f)..(ox + rw2 - 45f) && y in oy..(oy + 48f)) {
+                gameMode = !gameMode
+                keyboard = gameMode
+                invalidate()
+            }
+        }
     }
 }
