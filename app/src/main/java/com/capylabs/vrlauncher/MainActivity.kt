@@ -8,7 +8,6 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.Surface
-import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
@@ -58,21 +57,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (handTracker != null) return
         handTracker = HandTracker(
             context = this,
-            onHands = { hands ->
-                handOverlay.setHands(hands)
-                // Pinch state is now available to the VR interaction layer.
-                // The 3D pointer is kept independent from head pose.
-                scene.setHands(hands)
-            },
-            onError = { /* Camera/model errors are intentionally non-blocking for VR UI. */ }
+            onHands = { hands -> handOverlay.setHands(hands) },
+            onError = { /* Camera/model errors must not stop the VR desktop. */ }
         ).also { it.start(this) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            startHandTracking()
-        }
+        if (requestCode == CAMERA_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startHandTracking()
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -80,9 +72,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val raw = FloatArray(9)
         SensorManager.getRotationMatrixFromVector(raw, event.values)
         val remapped = FloatArray(9)
-        val rotation = if (android.os.Build.VERSION.SDK_INT >= 30) {
-            display?.rotation ?: Surface.ROTATION_0
-        } else {
+        val rotation = if (android.os.Build.VERSION.SDK_INT >= 30) display?.rotation ?: Surface.ROTATION_0 else {
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.rotation
         }
